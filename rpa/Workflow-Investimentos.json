@@ -1,0 +1,389 @@
+{
+  "name": "My workflow 2",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "c8396321-a896-469c-ba83-e77729fbdeec",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -1424,
+        -368
+      ],
+      "id": "9eb5b434-7b8d-4c8b-93e6-ad64b0029cb2",
+      "name": "Início",
+      "webhookId": "c8396321-a896-469c-ba83-e77729fbdeec"
+    },
+    {
+      "parameters": {
+        "url": "https://raw.githubusercontent.com/ftristao/dio-lab-assistente-investimentos-rpa-n8n/main/docs/data.csv",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {}
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -1264,
+        -128
+      ],
+      "id": "ae87a996-ae10-47ed-8b7f-8424ab9b9e02",
+      "name": "Lê investimentos"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pega CSV vindo do HTTP Request\nconst csvRaw = $json.data ?? $json.body ?? $json;\nconst text = (typeof csvRaw == \"string\") ? csvRaw : JSON.stringify(csvRaw);\nconst lines = text.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean);\nconst headers = lines[0].split(\",\").map(h => h.trim());\nconst investimentos = lines.slice(1).map(line => {\n  const cols = line.split(\",\").map(c => c.trim());\n  const obj = {};\n  headers.forEach((h,i) => obj[h] = cols[i] ?? \"\");\n  // normaliza mínimo para número\n  obj.minimo = Number(String(obj.minimo).replace(/[^\\d]/g, \"\")) || 0;\n  return obj;\n});\nreturn [{ json: { investimentos } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1088,
+        -128
+      ],
+      "id": "34adb582-d458-4708-94b2-1942afc30de4",
+      "name": "Formata em JSON"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -848,
+        -352
+      ],
+      "id": "8c6ae231-8d63-4ac1-95f7-93f1832c6d60",
+      "name": "Combina Investidores e Investimentos"
+    },
+    {
+      "parameters": {
+        "language": "pythonNative",
+        "pythonCode": "import re\n#return [{\"json\": {\"modo_detectado\": \"t1\",\n#                  \"conteudo\": \n#                    _items[0][\"json\"][\"body\"][\"clientes\"]}}]\n# 1. Resgatar os dados vindos do nó Merge\ninput_data = _items[0][\"json\"][\"body\"]\n\n# Garante leitura caso venha dentro de 'body.clientes' ou direto em 'clientes'\nbody = input_data\n#.get('body', {})\nif isinstance(body, dict):\n    clientes = body.get('clientes') or input_data.get('clientes') or []\nelse:\n    clientes = input_data.get('clientes') or []\n\ninvestimentos = input_data.get('investimentos') or _items[0][\"json\"][\"investimentos\"]\n\n# Função auxiliar para converter \"R$ 12.500,00\" em número float (12500.00)\ndef converter_saldo_para_numero(saldo_texto):\n    if isinstance(saldo_texto, (int, float)):\n        return float(saldo_texto)\n    if not saldo_texto:\n        return 0.0\n    \n    # Remove \"R$\", espaços e pontos de milhar, substituindo a vírgula por ponto\n    texto_limpo = re.sub(r'R\\$\\s?', '', str(saldo_texto))\n    texto_limpo = texto_limpo.replace('.', '').replace(',', '.').strip()\n    \n    try:\n        return float(texto_limpo)\n    except ValueError:\n        return 0.0\n\n# 2. Processar cada cliente e cruzar com os investimentos\nresultados = []\n\nfor cliente in clientes:\n    saldo_numero = converter_saldo_para_numero(cliente.get('saldo'))\n    \n    perfil_cliente = cliente.get('perfil', '')\n    perfil_cliente = perfil_cliente.strip().lower() if perfil_cliente else ''\n    \n    # Filtra os investimentos compatíveis com o perfil e que respeitam o valor mínimo\n    compativeis = []\n    for inv in investimentos:\n        perfil_inv = inv.get('perfil', '')\n        perfil_inv = perfil_inv.strip().lower() if perfil_inv else ''\n        \n        minimo = inv.get('minimo') or 0\n        saldo_suficiente = saldo_numero >= minimo\n        \n        if perfil_inv == perfil_cliente and saldo_suficiente:\n            compativeis.append(inv)\n            \n    mensagem = ''\n    produto_sugerido = None\n    \n    if len(compativeis) > 0:\n        # Sugere a opção mais rentável / de maior aporte compatível\n        produto_sugerido = compativeis[-1]\n        \n        # Formatação de moeda no padrão pt-BR (ex: 12500.0 -> 12.500,00)\n        valor_minimo = produto_sugerido.get('minimo', 0)\n        minimo_formatado = f\"{valor_minimo:,.2f}\".replace(',', 'X').replace('.', ',').replace('X', '.')\n        \n        mensagem = (\n            f\"Olá, {cliente.get('nome')}! Identificamos que o seu perfil de investidor é {cliente.get('perfil')} \"\n            f\"e seu saldo atual é de {cliente.get('saldo')}. Temos uma excelente oportunidade para você: \"\n            f\"{produto_sugerido.get('produto')}, com rentabilidade estimada de {produto_sugerido.get('rentabilidade')} \"\n            f\"ao ano e aplicação mínima de R$ {minimo_formatado}. Gostaria de saber mais?\"\n        )\n    else:\n        # Caso não haja produtos para o perfil ou saldo insuficiente\n        mensagem = (\n            f\"Olá, {cliente.get('nome')}! Vimos que seu perfil é {cliente.get('perfil')} \"\n            f\"e seu saldo disponível é de {cliente.get('saldo')}. No momento, nossa assessoria está selecionando \"\n            f\"produtos sob medida para você. Entre em contato com seu consultor!\"\n        )\n        \n    # 3. Retorna cada cliente como um item independente no formato padrão do N8N\n    resultados.append({\n        \"json\": {\n            \"nome\": cliente.get('nome'),\n            \"email\": cliente.get('email'),\n            \"saldo\": cliente.get('saldo'),\n            \"perfil\": cliente.get('perfil'),\n            \"investimento_sugerido\": produto_sugerido.get('produto') if produto_sugerido else 'Nenhum no momento',\n            \"rentabilidade\": produto_sugerido.get('rentabilidade') if produto_sugerido else None,\n            \"mensagem\": mensagem\n        }\n    })\n\nreturn resultados"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -656,
+        -352
+      ],
+      "id": "4874fd3b-dc8e-43dd-9720-df237d9e6ddb",
+      "name": "Identifica melhor investimento"
+    },
+    {
+      "parameters": {
+        "mode": "raw",
+        "jsonOutput": "={\n  \"nome\": \"{{ $json.nome }}\",\n  \"email\": \"{{ $json.email }}\",\n  \"mensagem\": \"{{ $json.mensagem }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.5,
+      "position": [
+        -448,
+        -352
+      ],
+      "id": "94e2d185-3b1e-41cd-a57d-328be0a749ba",
+      "name": "Elimina campos desnecessários"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        -224,
+        -352
+      ],
+      "id": "7660ac2d-df1c-465b-8065-4d57c007b84f",
+      "name": "Trata investidores individualmente"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "4de04b2e-d3a4-40d4-9326-82be6e1a7798",
+              "leftValue": "={{ $json.email }}",
+              "rightValue": "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$",
+              "operator": {
+                "type": "string",
+                "operation": "regex"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -192,
+        -128
+      ],
+      "id": "82fe3c2c-8fec-411c-ae53-b6c47c549478",
+      "name": "Valida e-mail",
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "fromEmail": "n8n@project.std",
+        "toEmail": "={{ $json.email }}",
+        "subject": "Investimentos",
+        "html": "={{ $json.mensagem }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        16,
+        -272
+      ],
+      "id": "484225b2-9901-4401-a02f-48fdb0d6e4f7",
+      "name": "Envia sugestão de investimento",
+      "webhookId": "c56ab72f-3604-493a-b687-743e52da3268",
+      "credentials": {
+        "smtp": {
+          "id": "NCkU7K0eva8qeGfJ",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "n8n@project.std",
+        "toEmail": "suporte@project.std",
+        "subject": "Email inválido!",
+        "html": "=Verificar contato  {{ $('Elimina campos desnecessários').item.json.nome }}, email {{ $('Elimina campos desnecessários').item.json.email }} não é válido!",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        16,
+        -80
+      ],
+      "id": "b62bf464-8a67-4f20-92f6-acef5aead188",
+      "name": "Envia alerta",
+      "webhookId": "598ddb57-2e12-4276-9d8d-fb0ec4c22bb9",
+      "credentials": {
+        "smtp": {
+          "id": "NCkU7K0eva8qeGfJ",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 1
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        -112
+      ],
+      "id": "98237de6-defc-432e-8c94-577ac239bf54",
+      "name": "Aguarda",
+      "webhookId": "0cfe69c9-c0c9-44f5-bb00-b82562bfc75d"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        208,
+        -368
+      ],
+      "id": "0db289ea-33c3-4705-a795-452f13ce942a",
+      "name": "Finaliza processo"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Início": {
+      "main": [
+        [
+          {
+            "node": "Combina Investidores e Investimentos",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Lê investimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lê investimentos": {
+      "main": [
+        [
+          {
+            "node": "Formata em JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Formata em JSON": {
+      "main": [
+        [
+          {
+            "node": "Combina Investidores e Investimentos",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Combina Investidores e Investimentos": {
+      "main": [
+        [
+          {
+            "node": "Identifica melhor investimento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identifica melhor investimento": {
+      "main": [
+        [
+          {
+            "node": "Elimina campos desnecessários",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Elimina campos desnecessários": {
+      "main": [
+        [
+          {
+            "node": "Trata investidores individualmente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Trata investidores individualmente": {
+      "main": [
+        [
+          {
+            "node": "Finaliza processo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Valida e-mail",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valida e-mail": {
+      "main": [
+        [
+          {
+            "node": "Envia sugestão de investimento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Envia alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Envia sugestão de investimento": {
+      "main": [
+        [
+          {
+            "node": "Aguarda",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Envia alerta": {
+      "main": [
+        [
+          {
+            "node": "Aguarda",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aguarda": {
+      "main": [
+        [
+          {
+            "node": "Trata investidores individualmente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finaliza processo": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "c97264bd-c0c1-4793-b477-0eabca8d1bb8",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "cec330a93b0edd2858c02cd1811b25865e79212277288797e6880fd07e8ef881"
+  },
+  "nodeGroups": [],
+  "id": "dFv44w5EbsPIt1rN",
+  "tags": []
+}
